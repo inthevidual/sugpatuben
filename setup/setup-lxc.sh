@@ -43,8 +43,14 @@ APP_HOME=/var/lib/sugpatuben-cs   # service user home; Deno's dep cache lives he
 
 echo "==> Installing packages"
 export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C.UTF-8 LANG=C.UTF-8   # avoid locale warnings during install
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends curl ca-certificates unzip ffmpeg python3
+apt-get install -y -qq --no-install-recommends curl ca-certificates unzip ffmpeg python3 locales
+
+echo "==> Generating locales (silences 'Cannot set LC_ALL' warnings on login)"
+sed -i -E 's/^# *(en_US\.UTF-8|sv_SE\.UTF-8)/\1/' /etc/locale.gen
+locale-gen >/dev/null
+update-locale LANG=en_US.UTF-8
 
 echo "==> Installing yt-dlp (standalone binary)"
 curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
