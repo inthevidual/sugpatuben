@@ -11,6 +11,8 @@
 #
 # The app is fetched from https://github.com/inthevidual/sugpatuben
 # (the sugpatuben-cs/ directory). Override the repo with REPO=owner/name.
+# While the repo is private, export GITHUB_TOKEN=<fine-grained PAT with
+# contents:read on the repo> before running.
 #
 # What it does: installs ffmpeg, yt-dlp (standalone binary + weekly auto-update
 # timer) and Deno; creates the service user; fetches the app to /var/www/sugpatuben-cs;
@@ -65,8 +67,14 @@ chown "$APP_USER:$APP_USER" "$APP_HOME"
 echo "==> Fetching app from github.com/$REPO ($GIT_REF)"
 FETCH_DIR=$(mktemp -d)
 trap 'rm -rf "$FETCH_DIR"' EXIT
-curl -fsSL "https://github.com/$REPO/archive/refs/heads/$GIT_REF.tar.gz" -o "$FETCH_DIR/repo.tar.gz" \
-  || curl -fsSL "https://github.com/$REPO/archive/refs/tags/$GIT_REF.tar.gz" -o "$FETCH_DIR/repo.tar.gz"
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  # Private repo: authenticated tarball via the API
+  curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+    "https://api.github.com/repos/$REPO/tarball/$GIT_REF" -o "$FETCH_DIR/repo.tar.gz"
+else
+  curl -fsSL "https://github.com/$REPO/archive/refs/heads/$GIT_REF.tar.gz" -o "$FETCH_DIR/repo.tar.gz" \
+    || curl -fsSL "https://github.com/$REPO/archive/refs/tags/$GIT_REF.tar.gz" -o "$FETCH_DIR/repo.tar.gz"
+fi
 tar xzf "$FETCH_DIR/repo.tar.gz" -C "$FETCH_DIR"
 SRC_DIR=$(find "$FETCH_DIR" -maxdepth 2 -type d -name "sugpatuben-cs" | head -1)
 if [[ -z "$SRC_DIR" ]]; then
