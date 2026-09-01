@@ -1,0 +1,3 @@
+downloads/
+.deno-cache/
+*.tar.gz

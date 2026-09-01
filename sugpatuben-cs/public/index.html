@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sug på tuben – CS</title>
+
+  <!-- OpenGraph -->
+  <meta property="og:title" content="Sug på tuben">
+  <meta property="og:description" content="Ladda ner ljud och video fr&aring;n YouTube, SVT, TV4, SR m.fl.">
+  <meta property="og:image" content="https://sugpatuben.cptjanst.se/og.png">
+  <meta property="og:url" content="https://sugpatuben.cptjanst.se">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/vendor/ffmpeg/ffmpeg.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            mono: ['Fira Mono', 'monospace'],
+          },
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /*
+     * Grid math: the logo image is 1536px wide with 48 cells (32px each).
+     * We pick a CSS cell size and derive the logo display width:
+     *   logo_width = 48 * CSS_CELL_SIZE
+     * At 20px CSS cells → logo = 960px (too wide for mobile)
+     * We use a CSS variable so we can scale responsively.
+     */
+    :root {
+      --cell: 20px;
+      --grid-color: rgba(160, 200, 220, 0.35);
+    }
+
+    body {
+      /* CSS graph paper */
+      background-color: #f4f7f9;
+      background-image:
+        linear-gradient(var(--grid-color) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+      background-size: var(--cell) var(--cell);
+      min-height: 100vh;
+      font-family: 'Fira Mono', monospace;
+    }
+
+    /* Logo container: width = 48 cells, let the image fill it.
+       Pinned to the right edge of the viewport so the tube in the artwork
+       looks like it continues beyond the screen. */
+    .logo-wrap {
+      /* 48 * var(--cell), but CSS calc can't multiply by unitless from var easily,
+         so we set this via a known value: 48 * 20px = 960px */
+      width: 960px;
+      max-width: 100%;
+      align-self: flex-end;   /* overrides the column's items-center */
+      margin-right: -1rem;    /* cancel body p-4 so the image touches the viewport edge */
+    }
+
+    /* === CARD === */
+    .card {
+      background: rgba(255, 255, 255, 0.82);
+      backdrop-filter: blur(2px);
+      border: 1px solid rgba(160, 185, 210, 0.4);
+      border-radius: 4px;
+      box-shadow: 0 2px 12px rgba(0, 30, 70, 0.07);
+    }
+
+    /* === INPUT === */
+    .field-input {
+      font-family: 'Fira Mono', monospace;
+      font-size: 14px;
+      background: rgba(240, 246, 252, 0.7);
+      border: 1.5px solid rgba(150, 180, 210, 0.45);
+      border-radius: 3px;
+      outline: none;
+      color: #1a2a3a;
+      padding: 10px 12px;
+      width: 100%;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .field-input::placeholder { color: rgba(100, 140, 170, 0.45); }
+    .field-input:focus {
+      border-color: rgba(80, 130, 190, 0.65);
+      box-shadow: 0 0 0 3px rgba(80, 130, 190, 0.1);
+    }
+
+    /* === TOGGLE === */
+    .tog {
+      font-family: 'Fira Mono', monospace;
+      font-size: 14px;
+      font-weight: 500;
+      background: rgba(238, 244, 250, 0.65);
+      border: 1.5px solid rgba(150, 180, 210, 0.4);
+      border-radius: 3px;
+      color: rgba(60, 90, 120, 0.6);
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.1s;
+    }
+    .tog:hover { background: rgba(225, 236, 248, 0.8); }
+    .tog-on {
+      background: rgba(210, 228, 248, 0.85);
+      border-color: rgba(80, 130, 190, 0.55);
+      color: #1a3a5a;
+      box-shadow: inset 0 1px 4px rgba(0, 40, 100, 0.08);
+    }
+
+    /* === DOWNLOAD BUTTON === */
+    .dl-btn {
+      font-family: 'Fira Mono', monospace;
+      font-weight: 700;
+      font-size: 16px;
+      background: #d04040;
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      cursor: pointer;
+      user-select: none;
+      box-shadow: 0 2px 8px rgba(180, 40, 30, 0.2);
+      transition: all 0.1s;
+    }
+    .dl-btn:hover {
+      background: #da4a4a;
+      box-shadow: 0 3px 12px rgba(180, 40, 30, 0.28);
+    }
+    .dl-btn:active {
+      background: #b83030;
+      transform: translateY(1px);
+      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
+    }
+    .dl-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* === FINISHED-FILE DOWNLOAD BUTTON === */
+    .dl-file-btn {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: rgba(236, 249, 240, 0.9);
+      border: 1.5px solid rgba(60, 150, 90, 0.5);
+      border-radius: 3px;
+      color: #1d5c33;
+      font-weight: 700;
+      font-size: 14px;
+      text-decoration: none;
+      transition: background 0.1s, border-color 0.1s, box-shadow 0.1s;
+    }
+    .dl-file-btn:hover {
+      background: rgba(222, 245, 229, 1);
+      border-color: rgba(50, 140, 80, 0.75);
+      box-shadow: 0 2px 8px rgba(40, 120, 70, 0.15);
+    }
+    .dl-file-btn:active { transform: translateY(1px); }
+    .dl-file-btn.hidden { display: none; }
+    .dl-file-arrow { flex-shrink: 0; }
+    .dl-file-title {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dl-file-fmt {
+      flex-shrink: 0;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      padding: 2px 6px;
+      border: 1px solid rgba(60, 150, 90, 0.5);
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.6);
+    }
+
+    /* === PROGRESS === */
+    .prog-trough {
+      background: rgba(238, 244, 250, 0.7);
+      border: 1.5px solid rgba(150, 180, 210, 0.35);
+      border-radius: 8px;
+      height: 14px;
+      overflow: hidden;
+    }
+    .prog-fill {
+      height: 100%;
+      background: #d04040;
+      border-radius: 8px;
+      transition: width 0.3s ease;
+    }
+
+    /* === STATUS === */
+    .status {
+      font-family: 'Fira Mono', monospace;
+      font-size: 13px;
+      background: rgba(240, 246, 252, 0.5);
+      border: 1.5px solid rgba(150, 180, 210, 0.3);
+      border-radius: 3px;
+      color: #3a5a7a;
+    }
+    .status-err { color: #a02a1a; }
+
+    /* === LABEL === */
+    .field-label {
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+      color: rgba(60, 90, 130, 0.55);
+      text-transform: uppercase;
+    }
+
+    @keyframes pulse-s {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .s-pulse { animation: pulse-s 1.5s ease-in-out infinite; }
+
+    @media (max-width: 640px) {
+      :root { --cell: 14px; }
+      .logo-wrap { width: calc(48 * 14px); /* 672px */ }
+    }
+  </style>
+</head>
+<body class="flex items-center justify-center p-4 min-h-screen">
+
+  <div class="w-full flex flex-col items-center">
+
+    <!-- LOGO: width = 48 grid cells so internal lines align -->
+    <div class="logo-wrap mb-4">
+      <img src="/sugpatuben-trans.webp" alt="Sug på tuben" class="w-full h-auto">
+    </div>
+
+    <!-- MAIN CARD -->
+    <div class="card w-full max-w-lg">
+      <div class="px-6 pt-5 pb-5 space-y-4">
+
+        <!-- URL -->
+        <div>
+          <label class="field-label block mb-1 ml-0.5">Video-l&auml;nk</label>
+          <input
+            type="text"
+            id="urlInput"
+            class="field-input"
+            placeholder="YouTube, SVT, TV4, SR..."
+            autocomplete="off"
+            spellcheck="false"
+          >
+        </div>
+
+        <!-- FORMAT -->
+        <div>
+          <label class="field-label block mb-1 ml-0.5">Format</label>
+          <div class="flex gap-1.5">
+            <button id="btnAudio" class="tog tog-on flex-1 py-2.5" onclick="setMode('audio')">MP3 (ljud)</button>
+            <button id="btnVideo" class="tog flex-1 py-2.5" onclick="setMode('video')">MP4 (video)</button>
+          </div>
+        </div>
+
+        <!-- DOWNLOAD -->
+        <button id="downloadBtn" class="dl-btn w-full py-3" onclick="startDownload()">Ladda ner</button>
+
+        <!-- VIDEO INFO -->
+        <div id="infoArea" style="display:none;" class="status px-3 py-2.5">
+          <div class="flex justify-between items-baseline">
+            <span id="infoTitle" class="font-bold truncate mr-2"></span>
+            <span id="infoDuration" class="field-label text-[11px] shrink-0"></span>
+          </div>
+        </div>
+
+        <!-- PROGRESS -->
+        <div id="progressArea" style="display:none;">
+          <div class="prog-trough">
+            <div class="prog-fill" id="progressFill" style="width:0%"></div>
+          </div>
+          <div class="flex justify-between mt-1">
+            <span id="progressPct" class="field-label text-[11px]">0%</span>
+            <span id="progressStatus" class="field-label text-[11px]"></span>
+          </div>
+        </div>
+
+        <!-- STATUS -->
+        <div class="status px-3 py-2.5" id="statusPanel">
+          <div id="statusText">Redo</div>
+          <a id="downloadLink" href="#" class="hidden dl-file-btn mt-1.5">
+            <svg class="dl-file-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2e9e57" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3v12"/><path d="m6 11 6 6 6-6"/><path d="M4 21h16"/>
+            </svg>
+            <span id="downloadLinkTitle" class="dl-file-title"></span>
+            <span id="downloadLinkFmt" class="dl-file-fmt"></span>
+          </a>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- FOOTER -->
+    <p class="text-center mt-5 text-base leading-relaxed" style="color:rgba(60,80,120,0.45);">
+      Klistra in en l&auml;nk fr&aring;n YouTube, SVT, TV4, SR m.fl. &mdash; v&auml;lj format och ladda ner.
+    </p>
+
+  </div>
+
+<script>
+  let mode = 'audio';
+  let downloading = false;
+
+  function setMode(m) {
+    mode = m;
+    document.getElementById('btnAudio').classList.toggle('tog-on', m === 'audio');
+    document.getElementById('btnVideo').classList.toggle('tog-on', m === 'video');
+  }
+
+  function setStatus(text, type = 'normal') {
+    const el = document.getElementById('statusText');
+    el.textContent = text;
+    el.classList.remove('s-pulse', 'status-err');
+    if (type === 'error') el.classList.add('status-err');
+    if (type === 'pulse') el.classList.add('s-pulse');
+  }
+
+  function setProgress(pct, statusText) {
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressPct').textContent = pct + '%';
+    if (statusText !== undefined) {
+      document.getElementById('progressStatus').textContent = statusText;
+    }
+  }
+
+  function showProgress(show) {
+    document.getElementById('progressArea').style.display = show ? 'block' : 'none';
+  }
+
+  function resetUI() {
+    const btn = document.getElementById('downloadBtn');
+    btn.disabled = false;
+    btn.textContent = 'Ladda ner';
+    downloading = false;
+  }
+
+  // === CLIENT-SIDE VFR→CFR CONVERSION (ffmpeg.wasm) ===
+  let ffmpegInstance = null;
+  async function getFFmpeg() {
+    if (ffmpegInstance) return ffmpegInstance;
+    const ff = new FFmpegWASM.FFmpeg();
+    await ff.load({
+      coreURL: '/vendor/ffmpeg/ffmpeg-core.js',
+      wasmURL: '/vendor/ffmpeg/ffmpeg-core.wasm',
+    });
+    ffmpegInstance = ff;
+    return ff;
+  }
+
+  async function convertInBrowser(fileUrl, targetFps, durationSec, onPct) {
+    const resp = await fetch(fileUrl);
+    if (!resp.ok) throw new Error('Kunde inte hämta filen');
+    const buf = new Uint8Array(await resp.arrayBuffer());
+
+    const ff = await getFFmpeg();
+    const onProg = ({ progress, time }) => {
+      let pct = 0;
+      if (durationSec > 0 && typeof time === 'number') pct = (time / 1e6) / durationSec * 100;
+      else if (typeof progress === 'number') pct = progress * 100;
+      onPct(Math.max(0, Math.min(100, Math.round(pct))));
+    };
+    ff.on('progress', onProg);
+    try {
+      await ff.writeFile('in.mp4', buf);
+      // Same recipe as the server-side variant
+      const rc = await ff.exec([
+        '-i', 'in.mp4',
+        '-fps_mode', 'cfr', '-r', String(targetFps),
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        'out.mp4',
+      ]);
+      if (rc !== 0) throw new Error('ffmpeg avslutades med kod ' + rc);
+      const out = await ff.readFile('out.mp4');
+      return new Blob([out.buffer], { type: 'video/mp4' });
+    } finally {
+      ff.off('progress', onProg);
+      try { await ff.deleteFile('in.mp4'); } catch { /* ignore */ }
+      try { await ff.deleteFile('out.mp4'); } catch { /* ignore */ }
+    }
+  }
+
+  function showFileButton(href, fname, clipTitle, autoClick) {
+    const link = document.getElementById('downloadLink');
+    link.href = href;
+    link.download = fname;
+
+    // Button label: the clip title (not the mangled filename), plus format badge
+    const ext = (fname.split('.').pop() || '').toUpperCase();
+    let displayTitle = clipTitle || fname.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+    // Strip engagement-junk prefixes like "329K views · 38K reactions |"
+    displayTitle = displayTitle
+      .replace(/^[\s\d.,]+[KMkm]?\s*(views?|visningar)[^|·]*[|·]\s*/i, '')
+      .replace(/^[\s\d.,]+[KMkm]?\s*(reactions?|reaktioner)[^|·]*[|·]\s*/i, '')
+      .trim() || displayTitle;
+    document.getElementById('downloadLinkTitle').textContent = displayTitle;
+    document.getElementById('downloadLinkFmt').textContent = ext;
+    link.title = 'Ladda ner: ' + fname;
+    link.classList.remove('hidden');
+
+    if (autoClick) {
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+  }
+
+  async function finishDownload(data, clipTitle) {
+    const fname = data.filename || data.file;
+    const fileUrl = '/api/file/' + data.file + '?name=' + encodeURIComponent(fname);
+
+    if (!data.needsCfr) {
+      setProgress(100, 'Klar!');
+      setStatus('Klar!');
+      showFileButton(fileUrl, fname, clipTitle, true);
+      resetUI();
+      return;
+    }
+
+    // VFR video: convert to CFR in the browser before handing the file over
+    try {
+      setProgress(0, 'Konverterar i webbläsaren...');
+      setStatus('Variabel bildfrekvens upptäckt – konverterar till konstant (' +
+        data.targetFps + ' fps) i din webbläsare...', 'pulse');
+      const blob = await convertInBrowser(fileUrl, data.targetFps, data.durationSec, (pct) => {
+        setProgress(pct, 'Konverterar till ' + data.targetFps + ' fps: ' + pct + '%');
+      });
+      setProgress(100, 'Klar!');
+      setStatus('Klar! Konverterad till konstant ' + data.targetFps + ' fps.');
+      showFileButton(URL.createObjectURL(blob), fname, clipTitle, true);
+    } catch (err) {
+      console.error('Browser conversion failed:', err);
+      // Fall back to the original (VFR) file rather than nothing
+      setProgress(100, 'Klar (utan konvertering)');
+      setStatus('Konvertering misslyckades – originalet (variabel bildfrekvens) hämtas.', 'error');
+      showFileButton(fileUrl, fname, clipTitle, true);
+    }
+    resetUI();
+  }
+
+  function startDownload() {
+    const url = document.getElementById('urlInput').value.trim();
+    if (!url) { setStatus('Ingen URL angiven!', 'error'); return; }
+    if (downloading) return;
+
+    downloading = true;
+    const btn = document.getElementById('downloadBtn');
+    btn.disabled = true;
+    btn.textContent = 'Laddar ner\u2026';
+
+    document.getElementById('downloadLink').classList.add('hidden');
+    setStatus('Ansluter\u2026', 'pulse');
+    showProgress(true);
+    setProgress(0, '');
+
+    const params = new URLSearchParams({ url, mode });
+    document.getElementById('infoArea').style.display = 'none';
+
+    const es = new EventSource('/api/download?' + params.toString());
+    let clipTitle = '';
+
+    es.addEventListener('info', (e) => {
+      const d = JSON.parse(e.data);
+      clipTitle = d.title || '';
+      document.getElementById('infoTitle').textContent = d.title;
+      document.getElementById('infoDuration').textContent = d.duration;
+      document.getElementById('infoArea').style.display = 'block';
+    });
+
+    es.addEventListener('progress', (e) => {
+      const d = JSON.parse(e.data);
+      setProgress(d.percent, d.status);
+      setStatus(d.status, 'pulse');
+    });
+
+    es.addEventListener('done', (e) => {
+      es.close();
+      const data = JSON.parse(e.data);
+      finishDownload(data, clipTitle);
+    });
+
+    es.addEventListener('error_msg', (e) => {
+      es.close();
+      const data = JSON.parse(e.data);
+      setStatus('Fel: ' + data.error, 'error');
+      showProgress(false);
+      resetUI();
+    });
+
+    es.onerror = () => {
+      es.close();
+      if (downloading) {
+        setStatus('Anslutningen bröts. Försök igen.', 'error');
+        showProgress(false);
+        resetUI();
+      }
+    };
+  }
+
+  document.getElementById('urlInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') startDownload();
+  });
+</script>
+
+</body>
+</html>
