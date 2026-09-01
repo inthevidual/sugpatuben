@@ -25,6 +25,9 @@
 
 set -euo pipefail
 
+# pct exec provides a minimal PATH without /usr/local/bin — fix it up front
+export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+
 if [[ $EUID -ne 0 ]]; then
   echo "Run as root (inside the LXC container)." >&2
   exit 1
@@ -84,10 +87,15 @@ chmod 755 /usr/local/bin/yt-dlp
 /usr/local/bin/yt-dlp --version
 
 echo "==> Installing Deno"
-if ! command -v deno >/dev/null; then
+DENO=/usr/local/bin/deno
+if [[ ! -x $DENO ]]; then
   curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y >/dev/null
 fi
-deno --version | head -1
+if [[ ! -x $DENO ]]; then
+  echo "Deno install failed — $DENO missing" >&2
+  exit 1
+fi
+"$DENO" --version | head -1
 
 echo "==> Creating service user"
 if ! id "$APP_USER" &>/dev/null; then
@@ -123,7 +131,7 @@ chmod 750 "$APP_DIR/downloads"
 sed -i "s/^const PORT = [0-9]\+;/const PORT = $APP_PORT;/" "$APP_DIR/server.ts"
 
 echo "==> Pre-caching Deno dependencies as $APP_USER"
-runuser -u "$APP_USER" -- env DENO_DIR="$APP_HOME/deno-cache" deno cache "$APP_DIR/server.ts"
+runuser -u "$APP_USER" -- env DENO_DIR="$APP_HOME/deno-cache" /usr/local/bin/deno cache "$APP_DIR/server.ts"
 
 echo "==> Installing systemd service"
 cat > /etc/systemd/system/sugpatuben-cs.service <<EOF
