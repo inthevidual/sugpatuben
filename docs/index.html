@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sug på tuben</title>
+  <meta property="og:title" content="Sug på tuben">
+  <meta property="og:description" content="Ladda ner ljud och video från YouTube, SVT, TV4, SR m.fl.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --cell: 20px;
+      --grid-color: rgba(160, 200, 220, 0.35);
+    }
+    * { margin: 0; box-sizing: border-box; }
+    body {
+      /* CSS graph paper — same as the app */
+      background-color: #f4f7f9;
+      background-image:
+        linear-gradient(var(--grid-color) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+      background-size: var(--cell) var(--cell);
+      min-height: 100vh;
+      font-family: 'Fira Mono', monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      color: #1a2a3a;
+    }
+    .logo { width: 640px; max-width: 100%; height: auto; margin-bottom: 1rem; }
+    .card {
+      background: rgba(255, 255, 255, 0.82);
+      backdrop-filter: blur(2px);
+      border: 1px solid rgba(160, 185, 210, 0.4);
+      border-radius: 4px;
+      box-shadow: 0 2px 12px rgba(0, 30, 70, 0.07);
+      padding: 1.5rem 2rem;
+      text-align: center;
+      max-width: 34rem;
+    }
+    h1 { font-size: 1.25rem; font-weight: 700; }
+    .sad { font-size: 3rem; display: block; margin-bottom: 0.75rem; }
+    .sub { margin-top: 0.75rem; font-size: 0.85rem; color: rgba(60, 80, 120, 0.6); }
+    #connecting .dots::after {
+      content: '';
+      animation: dots 1.5s steps(4, end) infinite;
+    }
+    @keyframes dots {
+      0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; }
+    }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <img class="logo" src="sugpatuben-trans.webp" alt="Sug på tuben">
+
+  <div class="card" id="connecting">
+    <h1>Kopplar dig till Sug på tuben<span class="dots"></span></h1>
+  </div>
+
+  <div class="card" id="down" hidden>
+    <span class="sad">:(</span>
+    <h1>Sug på tuben ligger nere just nu</h1>
+    <p class="sub">Försöker igen automatiskt om <span id="retry">20</span> s</p>
+  </div>
+
+  <script>
+    // Processing nodes, in priority order. First one that answers wins.
+    const BACKENDS = [
+      'https://sugpatuben-cs.cptjanst.se',
+    ];
+    // Testing override: ?backends=https://host1,https://host2
+    const override = new URLSearchParams(location.search).get('backends');
+    const backends = override ? override.split(',') : BACKENDS;
+
+    const RETRY_SECONDS = 20;
+
+    async function alive(base) {
+      try {
+        const resp = await fetch(base + '/api/health', {
+          signal: AbortSignal.timeout(4000),
+          cache: 'no-store',
+        });
+        return resp.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    async function tryConnect() {
+      document.getElementById('connecting').hidden = false;
+      document.getElementById('down').hidden = true;
+      for (const base of backends) {
+        if (await alive(base)) {
+          location.replace(base + '/');
+          return;
+        }
+      }
+      // All backends down — show status and schedule a retry
+      document.getElementById('connecting').hidden = true;
+      document.getElementById('down').hidden = false;
+      let left = RETRY_SECONDS;
+      const el = document.getElementById('retry');
+      el.textContent = left;
+      const tick = setInterval(() => {
+        left -= 1;
+        el.textContent = left;
+        if (left <= 0) {
+          clearInterval(tick);
+          tryConnect();
+        }
+      }, 1000);
+    }
+
+    tryConnect();
+  </script>
+
+</body>
+</html>
