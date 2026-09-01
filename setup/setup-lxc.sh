@@ -91,7 +91,7 @@ chmod 750 "$APP_DIR/downloads"
 sed -i "s/^const PORT = [0-9]\+;/const PORT = $APP_PORT;/" "$APP_DIR/server.ts"
 
 echo "==> Pre-caching Deno dependencies as $APP_USER"
-sudo -u "$APP_USER" DENO_DIR="$APP_HOME/deno-cache" deno cache "$APP_DIR/server.ts"
+runuser -u "$APP_USER" -- env DENO_DIR="$APP_HOME/deno-cache" deno cache "$APP_DIR/server.ts"
 
 echo "==> Installing systemd service"
 cat > /etc/systemd/system/sugpatuben-cs.service <<EOF
