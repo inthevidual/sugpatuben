@@ -408,6 +408,26 @@ function isAllowed(req: Request): boolean {
   return false;
 }
 
+// Optional CORS: allow a static frontend (e.g. a GitHub Pages failover site)
+// to call /api/* cross-origin. Set ALLOWED_ORIGIN to that page's origin,
+// e.g. "https://inthevidual.github.io" — scheme + host, no path.
+const ALLOWED_ORIGIN = (() => {
+  try {
+    return Deno.env.get("ALLOWED_ORIGIN") || "";
+  } catch {
+    return ""; // no --allow-env granted
+  }
+})();
+
+function applyCors(req: Request, res: Response): Response {
+  if (!ALLOWED_ORIGIN) return res;
+  const origin = req.headers.get("origin");
+  if (origin !== ALLOWED_ORIGIN) return res;
+  res.headers.set("Access-Control-Allow-Origin", origin);
+  res.headers.set("Vary", "Origin");
+  return res;
+}
+
 Deno.serve({ port: PORT }, async (req) => {
   const url = new URL(req.url);
 
@@ -419,9 +439,22 @@ Deno.serve({ port: PORT }, async (req) => {
     return new Response("Denna tjänst är bara tillgänglig i Norden.", { status: 403 });
   }
 
+  if (url.pathname.startsWith("/api/")) {
+    if (req.method === "OPTIONS") {
+      return applyCors(req, new Response(null, {
+        status: 204,
+        headers: { "Access-Control-Allow-Methods": "GET, OPTIONS" },
+      }));
+    }
+    // Lightweight health endpoint for the failover page to probe
+    if (url.pathname === "/api/health") {
+      return applyCors(req, Response.json({ ok: true }));
+    }
+  }
+
   // SSE download endpoint
   if (url.pathname === "/api/download" && req.method === "GET") {
-    return handleDownload(req);
+    return applyCors(req, await handleDownload(req));
   }
 
   if (url.pathname.startsWith("/api/file/")) {
@@ -430,7 +463,7 @@ Deno.serve({ port: PORT }, async (req) => {
       return new Response("Ogiltig fil", { status: 400 });
     }
     const displayName = url.searchParams.get("name") || file;
-    return handleServeFile(file, displayName);
+    return applyCors(req, await handleServeFile(file, displayName));
   }
 
   if (url.pathname === "/" || url.pathname === "") {

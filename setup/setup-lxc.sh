@@ -3,11 +3,15 @@
 # setup-lxc.sh — install sugpatuben-cs on a fresh Ubuntu LTS LXC container (Proxmox).
 #
 # Usage (as root inside the container):
-#   ./setup-lxc.sh [domain] [port] [git-ref]
+#   ./setup-lxc.sh [--failover[=origin]] [domain] [port] [git-ref]
 #
-#   domain   Public domain for the site (prompted for if omitted)
-#   port     Local app port NPM will forward to (default: 3001)
-#   git-ref  Branch or tag of the repo to deploy (default: main)
+#   domain      Public domain for the site (prompted for if omitted)
+#   port        Local app port NPM will forward to (default: 3001)
+#   git-ref     Branch or tag of the repo to deploy (default: main)
+#   --failover  Enable CORS so a static failover frontend (e.g. a GitHub
+#               Pages site) may call this backend's /api/* cross-origin.
+#               Takes the page's origin (https://host, no path) as
+#               --failover=https://example.github.io, or prompts for it.
 #
 # The app is fetched from https://github.com/inthevidual/sugpatuben
 # (the sugpatuben-cs/ directory). Override the repo with REPO=owner/name.
@@ -27,6 +31,18 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # ---- Inputs -----------------------------------------------------------------
+FAILOVER=0
+CORS_ORIGIN=""
+POSITIONAL=()
+for arg in "$@"; do
+  case "$arg" in
+    --failover)     FAILOVER=1 ;;
+    --failover=*)   FAILOVER=1; CORS_ORIGIN="${arg#--failover=}" ;;
+    *)              POSITIONAL+=("$arg") ;;
+  esac
+done
+set -- "${POSITIONAL[@]:-}"
+
 DOMAIN="${1:-}"
 if [[ -z "$DOMAIN" ]]; then
   read -rp "Domain for this site [sugpatuben-cs.cptjanst.se]: " DOMAIN
@@ -35,6 +51,16 @@ fi
 APP_PORT="${2:-3001}"
 GIT_REF="${3:-main}"
 REPO="${REPO:-inthevidual/sugpatuben}"
+
+if [[ $FAILOVER -eq 1 && -z "$CORS_ORIGIN" ]]; then
+  read -rp "Failover page origin to allow cross-origin requests from (e.g. https://inthevidual.github.io): " CORS_ORIGIN
+fi
+if [[ -n "$CORS_ORIGIN" ]]; then
+  # Normalize to a bare origin: add scheme if missing, strip any path/slash
+  [[ "$CORS_ORIGIN" =~ ^https?:// ]] || CORS_ORIGIN="https://$CORS_ORIGIN"
+  CORS_ORIGIN=$(echo "$CORS_ORIGIN" | sed -E 's#^(https?://[^/]+).*#\1#')
+  echo "CORS will be allowed from: $CORS_ORIGIN"
+fi
 
 APP_DIR=/var/www/sugpatuben-cs
 APP_USER=sugpatuben
@@ -112,7 +138,8 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR
 Environment=DENO_DIR=$APP_HOME/deno-cache
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/local/bin/deno run --allow-net --allow-read --allow-write=$APP_DIR/downloads --allow-run=/usr/local/bin/yt-dlp,/usr/bin/ffprobe server.ts
+${CORS_ORIGIN:+Environment=ALLOWED_ORIGIN=$CORS_ORIGIN}
+ExecStart=/usr/local/bin/deno run --allow-net --allow-read --allow-env=ALLOWED_ORIGIN --allow-write=$APP_DIR/downloads --allow-run=/usr/local/bin/yt-dlp,/usr/bin/ffprobe server.ts
 Restart=on-failure
 RestartSec=5
 
@@ -222,6 +249,26 @@ the CNAME and the Origin Rule for $DOMAIN.
 NOTE: the app's Nordic geo-gate reads Cloudflare's cf-ipcountry header.
 If the domain is NOT behind the Cloudflare proxy, that header is absent
 and all visitors are allowed.
+INSTRUCTIONS
+
+if [[ -n "$CORS_ORIGIN" ]]; then
+cat <<INSTRUCTIONS
+
+FAILOVER / CORS
+---------------
+This backend accepts cross-origin /api/* requests from:
+
+  $CORS_ORIGIN
+
+Point your static failover page's API base at https://$DOMAIN and probe
+GET https://$DOMAIN/api/health ({"ok":true}) to pick a live backend.
+To change the allowed origin later, edit ALLOWED_ORIGIN in
+/etc/systemd/system/sugpatuben-cs.service and run:
+  systemctl daemon-reload && systemctl restart sugpatuben-cs
+INSTRUCTIONS
+fi
+
+cat <<INSTRUCTIONS
 
 Manage the service with:
   systemctl status sugpatuben-cs

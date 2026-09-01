@@ -85,7 +85,11 @@ for i in $(seq 1 45); do
 done
 
 echo "==> Running sugpatuben-cs setup inside container $CTID"
-pct exec "$CTID" -- bash -c "curl -fsSL https://raw.githubusercontent.com/inthevidual/sugpatuben/main/setup/setup-lxc.sh -o /root/setup-lxc.sh && chmod +x /root/setup-lxc.sh && /root/setup-lxc.sh '$DOMAIN' '$APP_PORT'"
+# Set FAILOVER_ORIGIN on the host to enable CORS for a static failover page,
+# e.g. FAILOVER_ORIGIN=https://inthevidual.github.io
+FAILOVER_ARG=""
+[[ -n "${FAILOVER_ORIGIN:-}" ]] && FAILOVER_ARG="--failover=$FAILOVER_ORIGIN"
+pct exec "$CTID" -- bash -c "curl -fsSL https://raw.githubusercontent.com/inthevidual/sugpatuben/main/setup/setup-lxc.sh -o /root/setup-lxc.sh && chmod +x /root/setup-lxc.sh && /root/setup-lxc.sh $FAILOVER_ARG '$DOMAIN' '$APP_PORT'"
 
 CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
 cat <<DONE
