@@ -71,7 +71,8 @@
   <script>
     // Processing nodes, in priority order. First one that answers wins.
     const BACKENDS = [
-      'https://sugpatuben-cs.cptjanst.se',
+      'https://sugpatuben-vas.cptjanst.se',  // N150 LXC behind NPM
+      'https://sugpatuben-cs.cptjanst.se',   // WSL2 box (fallback)
     ];
     // Testing override: ?backends=https://host1,https://host2
     const override = new URLSearchParams(location.search).get('backends');
