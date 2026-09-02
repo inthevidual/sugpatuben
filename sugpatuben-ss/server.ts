@@ -207,12 +207,14 @@ async function convertToCfr(
 // Deliberately aggressive: the service is meant for a handful of users.
 const IP_WINDOW_MS = 60_000; //         per-IP: more than IP_MAX_REQUESTS
 const IP_MAX_REQUESTS = 10; //          download requests per minute
+const FILE_MAX_REQUESTS = 5; //         file fetches per minute (tighter)
 const IP_BLOCK_MS = 15 * 60_000; //     → blocked for 15 minutes
 const SURGE_WINDOW_MS = 5 * 60_000; //  surge guard: more than SURGE_MAX_IPS
 const SURGE_MAX_IPS = 8; //             distinct IPs within 5 minutes
 const SURGE_BLOCK_MS = 10 * 60_000; //  → everyone locked out for 10 minutes
 
 const ipHits = new Map<string, number[]>();
+const fileHits = new Map<string, number[]>();
 const blockedIps = new Map<string, number>();
 const recentIps = new Map<string, number>();
 let surgeUntil = 0;
@@ -228,9 +230,14 @@ function clientIp(req: Request): string {
 }
 
 // Returns the rejection (message + seconds until allowed again), else null.
-function rateLimit(req: Request): { error: string; retryAfter: number } | null {
+function rateLimit(
+  req: Request,
+  kind: "download" | "file" = "download",
+): { error: string; retryAfter: number } | null {
   const now = Date.now();
   const ip = clientIp(req);
+  const hitMap = kind === "file" ? fileHits : ipHits;
+  const maxRequests = kind === "file" ? FILE_MAX_REQUESTS : IP_MAX_REQUESTS;
 
   if (now < surgeUntil) {
     return {
@@ -248,12 +255,12 @@ function rateLimit(req: Request): { error: string; retryAfter: number } | null {
   }
   if (blockedUntil) blockedIps.delete(ip);
 
-  const hits = (ipHits.get(ip) ?? []).filter((t) => now - t < IP_WINDOW_MS);
+  const hits = (hitMap.get(ip) ?? []).filter((t) => now - t < IP_WINDOW_MS);
   hits.push(now);
-  ipHits.set(ip, hits);
-  if (hits.length > IP_MAX_REQUESTS) {
+  hitMap.set(ip, hits);
+  if (hits.length > maxRequests) {
     blockedIps.set(ip, now + IP_BLOCK_MS);
-    ipHits.delete(ip);
+    hitMap.delete(ip);
     console.warn(`Rate limit: blocked ${ip} for ${IP_BLOCK_MS / 60_000} min`);
     return {
       error: "För många förfrågningar. Försök igen senare.",
@@ -270,6 +277,7 @@ function rateLimit(req: Request): { error: string; retryAfter: number } | null {
     surgeUntil = now + SURGE_BLOCK_MS;
     recentIps.clear();
     ipHits.clear();
+    fileHits.clear();
     console.warn(
       `Surge guard: >${SURGE_MAX_IPS} distinct IPs within ${SURGE_WINDOW_MS / 60_000} min — locked down for ${SURGE_BLOCK_MS / 60_000} min`,
     );
@@ -626,7 +634,7 @@ Deno.serve({ port: PORT }, async (req) => {
     if (!file.match(/^[a-f0-9\-]+\.(mp3|mp4)$/)) {
       return new Response("Ogiltig fil", { status: 400 });
     }
-    const limited = rateLimit(req);
+    const limited = rateLimit(req, "file");
     if (limited) {
       return Response.json(limited, {
         status: 429,
