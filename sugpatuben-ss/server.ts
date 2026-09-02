@@ -203,8 +203,85 @@ async function convertToCfr(
   }
 }
 
+// === RATE LIMITING ===
+// Deliberately aggressive: the service is meant for a handful of users.
+const IP_WINDOW_MS = 60_000; //         per-IP: more than IP_MAX_REQUESTS
+const IP_MAX_REQUESTS = 10; //          download requests per minute
+const IP_BLOCK_MS = 15 * 60_000; //     → blocked for 15 minutes
+const SURGE_WINDOW_MS = 5 * 60_000; //  surge guard: more than SURGE_MAX_IPS
+const SURGE_MAX_IPS = 8; //             distinct IPs within 5 minutes
+const SURGE_BLOCK_MS = 10 * 60_000; //  → everyone locked out for 10 minutes
+
+const ipHits = new Map<string, number[]>();
+const blockedIps = new Map<string, number>();
+const recentIps = new Map<string, number>();
+let surgeUntil = 0;
+
+// Real client IP. cf-connecting-ip is set by Cloudflare (the proxy's own
+// address is what nginx/NPM sees as remote). Spoofable only by traffic that
+// bypasses Cloudflare entirely, which never reaches these vhosts.
+function clientIp(req: Request): string {
+  return req.headers.get("cf-connecting-ip") ||
+    req.headers.get("x-real-ip") ||
+    (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() ||
+    "unknown";
+}
+
+// Returns a user-facing message when the request must be rejected, else null.
+function rateLimit(req: Request): string | null {
+  const now = Date.now();
+  const ip = clientIp(req);
+
+  if (now < surgeUntil) {
+    return "Tjänsten är hårt belastad just nu. Försök igen om en stund.";
+  }
+
+  const blockedUntil = blockedIps.get(ip) ?? 0;
+  if (now < blockedUntil) {
+    return "För många förfrågningar. Försök igen senare.";
+  }
+  if (blockedUntil) blockedIps.delete(ip);
+
+  const hits = (ipHits.get(ip) ?? []).filter((t) => now - t < IP_WINDOW_MS);
+  hits.push(now);
+  ipHits.set(ip, hits);
+  if (hits.length > IP_MAX_REQUESTS) {
+    blockedIps.set(ip, now + IP_BLOCK_MS);
+    ipHits.delete(ip);
+    console.warn(`Rate limit: blocked ${ip} for ${IP_BLOCK_MS / 60_000} min`);
+    return "För många förfrågningar. Försök igen senare.";
+  }
+
+  // Surge/botnet heuristic: many distinct IPs at once is not our 5 users
+  recentIps.set(ip, now);
+  for (const [k, t] of recentIps) {
+    if (now - t > SURGE_WINDOW_MS) recentIps.delete(k);
+  }
+  if (recentIps.size > SURGE_MAX_IPS) {
+    surgeUntil = now + SURGE_BLOCK_MS;
+    recentIps.clear();
+    ipHits.clear();
+    console.warn(
+      `Surge guard: >${SURGE_MAX_IPS} distinct IPs within ${SURGE_WINDOW_MS / 60_000} min — locked down for ${SURGE_BLOCK_MS / 60_000} min`,
+    );
+    return "Tjänsten är hårt belastad just nu. Försök igen om en stund.";
+  }
+  return null;
+}
+
+// The frontend listens on an EventSource, so rejections are sent as a
+// well-formed SSE error event rather than an HTTP error status.
+function sseError(message: string): Response {
+  return new Response(
+    `event: error_msg\ndata: ${JSON.stringify({ error: message })}\n\n`,
+    { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } },
+  );
+}
+
 async function handleDownload(req: Request): Promise<Response> {
   try {
+    const limited = rateLimit(req);
+    if (limited) return sseError(limited);
     const url = new URL(req.url);
     const rawUrl = url.searchParams.get("url")?.trim();
     const mode = url.searchParams.get("mode") || "audio";
