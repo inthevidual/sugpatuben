@@ -227,18 +227,24 @@ function clientIp(req: Request): string {
     "unknown";
 }
 
-// Returns a user-facing message when the request must be rejected, else null.
-function rateLimit(req: Request): string | null {
+// Returns the rejection (message + seconds until allowed again), else null.
+function rateLimit(req: Request): { error: string; retryAfter: number } | null {
   const now = Date.now();
   const ip = clientIp(req);
 
   if (now < surgeUntil) {
-    return "Tjänsten är hårt belastad just nu. Försök igen om en stund.";
+    return {
+      error: "Tjänsten är hårt belastad just nu. Försök igen om en stund.",
+      retryAfter: Math.ceil((surgeUntil - now) / 1000),
+    };
   }
 
   const blockedUntil = blockedIps.get(ip) ?? 0;
   if (now < blockedUntil) {
-    return "För många förfrågningar. Försök igen senare.";
+    return {
+      error: "För många förfrågningar. Försök igen senare.",
+      retryAfter: Math.ceil((blockedUntil - now) / 1000),
+    };
   }
   if (blockedUntil) blockedIps.delete(ip);
 
@@ -249,7 +255,10 @@ function rateLimit(req: Request): string | null {
     blockedIps.set(ip, now + IP_BLOCK_MS);
     ipHits.delete(ip);
     console.warn(`Rate limit: blocked ${ip} for ${IP_BLOCK_MS / 60_000} min`);
-    return "För många förfrågningar. Försök igen senare.";
+    return {
+      error: "För många förfrågningar. Försök igen senare.",
+      retryAfter: Math.ceil(IP_BLOCK_MS / 1000),
+    };
   }
 
   // Surge/botnet heuristic: many distinct IPs at once is not our 5 users
@@ -264,16 +273,19 @@ function rateLimit(req: Request): string | null {
     console.warn(
       `Surge guard: >${SURGE_MAX_IPS} distinct IPs within ${SURGE_WINDOW_MS / 60_000} min — locked down for ${SURGE_BLOCK_MS / 60_000} min`,
     );
-    return "Tjänsten är hårt belastad just nu. Försök igen om en stund.";
+    return {
+      error: "Tjänsten är hårt belastad just nu. Försök igen om en stund.",
+      retryAfter: Math.ceil(SURGE_BLOCK_MS / 1000),
+    };
   }
   return null;
 }
 
 // The frontend listens on an EventSource, so rejections are sent as a
 // well-formed SSE error event rather than an HTTP error status.
-function sseError(message: string): Response {
+function sseError(limited: { error: string; retryAfter: number }): Response {
   return new Response(
-    `event: error_msg\ndata: ${JSON.stringify({ error: message })}\n\n`,
+    `event: error_msg\ndata: ${JSON.stringify(limited)}\n\n`,
     { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } },
   );
 }
@@ -613,6 +625,13 @@ Deno.serve({ port: PORT }, async (req) => {
     const file = url.pathname.replace("/api/file/", "");
     if (!file.match(/^[a-f0-9\-]+\.(mp3|mp4)$/)) {
       return new Response("Ogiltig fil", { status: 400 });
+    }
+    const limited = rateLimit(req);
+    if (limited) {
+      return Response.json(limited, {
+        status: 429,
+        headers: { "Retry-After": String(limited.retryAfter) },
+      });
     }
     const displayName = url.searchParams.get("name") || file;
     return handleServeFile(file, displayName);

@@ -228,11 +228,52 @@
       :root { --cell: 14px; }
       .logo-wrap { width: calc(48 * 14px); /* 672px */ }
     }
+
+    /* === RATE LIMIT WARNING === */
+    .blurred {
+      filter: blur(7px);
+      pointer-events: none;
+      user-select: none;
+    }
+    #rlOverlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      padding: 1rem;
+    }
+    #rlOverlay[hidden] { display: none; }
+    .rl-card {
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(2px);
+      border: 2px solid #d04040;
+      border-radius: 4px;
+      box-shadow: 0 4px 24px rgba(180, 40, 30, 0.3);
+      padding: 2rem 2.5rem;
+      text-align: center;
+      max-width: 30rem;
+    }
+    .rl-title {
+      color: #a02a1a;
+      font-weight: 700;
+      font-size: 1.3rem;
+      letter-spacing: 0.02em;
+      margin-top: 0.75rem;
+    }
+    .rl-sub {
+      margin-top: 0.75rem;
+      color: #1a2a3a;
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+    .rl-sub strong { font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body class="flex items-center justify-center p-4 min-h-screen">
 
-  <div class="w-full flex flex-col items-center">
+  <div id="mainWrap" class="w-full flex flex-col items-center">
 
     <!-- LOGO: width = 48 grid cells so internal lines align -->
     <div class="logo-wrap mb-4">
@@ -346,6 +387,31 @@
     downloading = false;
   }
 
+  // === RATE LIMIT WARNING ===
+  let rlInterval = null;
+  function showRateLimit(seconds) {
+    document.getElementById('mainWrap').classList.add('blurred');
+    document.getElementById('rlOverlay').hidden = false;
+    let left = Math.max(1, Math.round(seconds));
+    const timer = document.getElementById('rlTimer');
+    const fmt = () => {
+      timer.textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
+    };
+    fmt();
+    clearInterval(rlInterval);
+    rlInterval = setInterval(() => {
+      left -= 1;
+      if (left <= 0) {
+        clearInterval(rlInterval);
+        document.getElementById('rlOverlay').hidden = true;
+        document.getElementById('mainWrap').classList.remove('blurred');
+        setStatus('Redo');
+        return;
+      }
+      fmt();
+    }, 1000);
+  }
+
   function startDownload() {
     const url = document.getElementById('urlInput').value.trim();
     if (!url) { setStatus('Ingen URL angiven!', 'error'); return; }
@@ -420,9 +486,13 @@
     es.addEventListener('error_msg', (e) => {
       es.close();
       const data = JSON.parse(e.data);
-      setStatus('Fel: ' + data.error, 'error');
       showProgress(false);
       resetUI();
+      if (data.retryAfter) {
+        showRateLimit(data.retryAfter);
+        return;
+      }
+      setStatus('Fel: ' + data.error, 'error');
     });
 
     es.onerror = () => {
@@ -440,5 +510,17 @@
   });
 </script>
 
+
+  <!-- RATE LIMIT WARNING -->
+  <div id="rlOverlay" hidden>
+    <div class="rl-card">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#d04040" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      <div class="rl-title">NU F&Aring;RU FAN LUGNA NEREJ</div>
+      <p class="rl-sub">Alla kan inte suga samtidigt.<br>Kom tillbaka om <strong id="rlTimer">10:00</strong></p>
+    </div>
+  </div>
 </body>
 </html>
