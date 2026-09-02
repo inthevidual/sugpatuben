@@ -67,6 +67,35 @@ async function resolveSRUrl(url: string): Promise<string> {
   return url;
 }
 
+// TV4/TV4Play: yt-dlp's extractor only knows old numeric-id URLs, not the
+// newer hex-id paths (/korthet/, /klipp/, /video/). Resolve those through
+// TV4's playback API instead (same approach as the Privatkopiera extension)
+// and hand yt-dlp the HLS manifest directly. Login-gated/DRM content still fails.
+async function resolveTV4Url(
+  url: string,
+): Promise<{ url: string; title: string; isManifest: boolean }> {
+  const passthrough = { url, title: "", isManifest: false };
+  try {
+    const u = new URL(url);
+    if (u.hostname.replace(/^www\./, "") !== "tv4play.se") return passthrough;
+    const m = u.pathname.match(/^\/(?:video|program|klipp|korthet)\/([0-9a-f]+)/);
+    if (!m) return passthrough;
+    const api = `https://playback2.a2d.tv/play/${m[1]}?service=tv4play&device=browser&protocol=hls%2Cdash&drm=widevine&browser=GoogleChrome&capabilities=live-drm-adstitch-2%2Cyospace3`;
+    const resp = await fetch(api, { headers: { accept: "application/json" } });
+    if (!resp.ok) return passthrough;
+    const data = await resp.json();
+    const manifest = data?.playbackItem?.manifestUrl;
+    if (!manifest) return passthrough;
+    return {
+      url: manifest,
+      title: (data?.metadata?.title ?? "").trim(),
+      isManifest: true,
+    };
+  } catch {
+    return passthrough;
+  }
+}
+
 function parseFps(frac: string | undefined): number {
   if (!frac) return 0;
   const [num, den] = frac.split("/").map(Number);
@@ -227,7 +256,8 @@ async function handleDownload(req: Request): Promise<Response> {
       return Response.json({ error: "Ogiltig URL" }, { status: 400 });
     }
 
-    const videoUrl = await resolveSRUrl(cleanUrl(rawUrl));
+    const tv4 = await resolveTV4Url(await resolveSRUrl(cleanUrl(rawUrl)));
+    const videoUrl = tv4.url;
     const id = crypto.randomUUID();
     const ext = mode === "audio" ? "mp3" : "mp4";
     const outTemplate = join(DOWNLOADS_DIR, `${id}.%(ext)s`);
@@ -258,18 +288,22 @@ async function handleDownload(req: Request): Promise<Response> {
         }, 15_000);
 
         try {
-          // Step 1: get title
+          // Step 1: get title (already known when a playback API resolved the URL)
           send("progress", { percent: 0, status: "Hämtar videoinformation..." });
 
-          const infoProc = new Deno.Command(YT_DLP, {
-            args: ["--get-title", "--get-duration", "--no-warnings", "--no-playlist", "--", videoUrl],
-            stdout: "piped",
-            stderr: "piped",
-          });
-          const infoResult = await infoProc.output();
-          const infoLines = new TextDecoder().decode(infoResult.stdout).trim().split("\n");
-          const title = infoLines[0] || "nedladdning";
-          const duration = infoLines[1] || "";
+          let title = tv4.title;
+          let duration = "";
+          if (!title) {
+            const infoProc = new Deno.Command(YT_DLP, {
+              args: ["--get-title", "--get-duration", "--no-warnings", "--no-playlist", "--", videoUrl],
+              stdout: "piped",
+              stderr: "piped",
+            });
+            const infoResult = await infoProc.output();
+            const infoLines = new TextDecoder().decode(infoResult.stdout).trim().split("\n");
+            title = infoLines[0] || "nedladdning";
+            duration = infoLines[1] || "";
+          }
 
           send("info", { title, duration });
           send("progress", { percent: 2, status: `Laddar ner: ${title}` });
@@ -288,7 +322,11 @@ async function handleDownload(req: Request): Promise<Response> {
             args.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
           } else {
             args.push(
-              "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+              // HLS manifests carry split video/audio without ext=m4a audio,
+              // so they need a looser selector than regular site URLs
+              "-f", tv4.isManifest
+                ? "bestvideo[height<=1080]+bestaudio/best"
+                : "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
               "--merge-output-format", "mp4",
             );
           }
