@@ -498,7 +498,7 @@ async function handleServeFile(filePath: string, displayName: string): Promise<R
 }
 
 // Nordic countries + common bot/internal codes
-const ALLOWED_COUNTRIES = new Set(["SE", "NO", "DK", "FI", "IS", "FO", "AX", "GL", "SJ", "T1"]);
+const ALLOWED_COUNTRIES = new Set(["SE", "NO", "DK", "FI", "IS", "FO", "AX", "GL", "SJ", "PL", "T1"]);
 
 const BOT_PATTERNS = [
   "facebookexternalhit", "Facebot",         // Meta
