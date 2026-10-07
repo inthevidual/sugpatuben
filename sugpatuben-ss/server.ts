@@ -54,19 +54,29 @@ type Resolved = { url: string; title: string; isManifest: boolean; audioOnly: bo
 // SR: yt-dlp's Sveriges Radio extractor is broken (its metadata API 404s).
 // The Next.js pages embed their clips as escaped JSON flight data instead —
 // pick the page's main clip (index 0, else the longest) and hand yt-dlp the
-// direct m4a file. Akamai rejects requests without browser-like headers.
+// direct m4a file. Akamai fingerprints the client: Deno's fetch gets 403
+// unless it sends the full set of headers a real Chrome navigation would.
+const SR_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "sv-SE,sv;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Upgrade-Insecure-Requests": "1",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+  "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+};
+
 async function resolveSRUrl(url: string): Promise<Resolved | null> {
   try {
     const u = new URL(url);
     if (!u.hostname.includes("sverigesradio.se")) return null;
-    const resp = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
-      },
-    });
+    const resp = await fetch(url, { headers: SR_HEADERS });
     if (!resp.ok) return null;
     const html = (await resp.text()).replaceAll('\\"', '"');
 
