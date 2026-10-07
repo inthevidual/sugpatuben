@@ -47,52 +47,75 @@ function cleanUrl(url: string): string {
   return url;
 }
 
-// SR slug articles don't have a numeric ID in the URL — fetch the page and extract it
-async function resolveSRUrl(url: string): Promise<string> {
+// A page URL resolved to something yt-dlp can fetch directly, with the
+// title already known (skips yt-dlp's own metadata lookup).
+type Resolved = { url: string; title: string; isManifest: boolean; audioOnly: boolean };
+
+// SR: yt-dlp's Sveriges Radio extractor is broken (its metadata API 404s).
+// The Next.js pages embed their clips as escaped JSON flight data instead —
+// pick the page's main clip (index 0, else the longest) and hand yt-dlp the
+// direct m4a file. Akamai rejects requests without browser-like headers.
+async function resolveSRUrl(url: string): Promise<Resolved | null> {
   try {
     const u = new URL(url);
-    if (!u.hostname.includes("sverigesradio.se")) return url;
-    // Already has numeric ID
-    if (u.searchParams.has("artikel") || u.pathname.match(/\/artikel\/\d+/)) return url;
-    // Slug-based article URL — fetch page to get publicationId
-    if (u.pathname.match(/\/artikel\//)) {
-      const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-      const html = await resp.text();
-      const m = html.match(/publicationId=(\d+)/);
-      if (m) {
-        return `https://sverigesradio.se/sida/artikel.aspx?artikel=${m[1]}`;
-      }
+    if (!u.hostname.includes("sverigesradio.se")) return null;
+    const resp = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
+      },
+    });
+    if (!resp.ok) return null;
+    const html = (await resp.text()).replaceAll('\\"', '"');
+
+    const clips: { index: number; title: string; duration: number; url: string }[] = [];
+    const re = /"index":(-?\d+),"soundName":("(?:[^"\\]|\\.)*"),"playAudio":\{[^{}]*?"duration":(\d+),"qualities":\{(.*?)\}\}/g;
+    for (const m of html.matchAll(re)) {
+      // Prefer the highest bitrate that is present
+      const q = m[4];
+      const fileUrl = ["high", "standard", "low"]
+        .map((k) => q.match(new RegExp(`"${k}":\\{"url":"(https://[^"]+)"`))?.[1])
+        .find(Boolean);
+      if (!fileUrl) continue;
+      let title = "";
+      try { title = JSON.parse(m[2]); } catch { /* leave empty */ }
+      clips.push({ index: Number(m[1]), title: title.trim(), duration: Number(m[3]), url: fileUrl });
     }
-  } catch { /* fall through */ }
-  return url;
+    if (!clips.length) return null;
+    const clip = clips.find((c) => c.index === 0) ??
+      clips.reduce((a, b) => (b.duration > a.duration ? b : a));
+    return { url: clip.url, title: clip.title, isManifest: false, audioOnly: true };
+  } catch {
+    return null;
+  }
 }
 
 // TV4/TV4Play: yt-dlp's extractor only knows old numeric-id URLs, not the
 // newer hex-id paths (/korthet/, /klipp/, /video/). Resolve those through
 // TV4's playback API instead (same approach as the Privatkopiera extension)
 // and hand yt-dlp the HLS manifest directly. Login-gated/DRM content still fails.
-async function resolveTV4Url(
-  url: string,
-): Promise<{ url: string; title: string; isManifest: boolean }> {
-  const passthrough = { url, title: "", isManifest: false };
+async function resolveTV4Url(url: string): Promise<Resolved | null> {
   try {
     const u = new URL(url);
-    if (u.hostname.replace(/^www\./, "") !== "tv4play.se") return passthrough;
+    if (u.hostname.replace(/^www\./, "") !== "tv4play.se") return null;
     const m = u.pathname.match(/^\/(?:video|program|klipp|korthet)\/([0-9a-f]+)/);
-    if (!m) return passthrough;
+    if (!m) return null;
     const api = `https://playback2.a2d.tv/play/${m[1]}?service=tv4play&device=browser&protocol=hls%2Cdash&drm=widevine&browser=GoogleChrome&capabilities=live-drm-adstitch-2%2Cyospace3`;
     const resp = await fetch(api, { headers: { accept: "application/json" } });
-    if (!resp.ok) return passthrough;
+    if (!resp.ok) return null;
     const data = await resp.json();
     const manifest = data?.playbackItem?.manifestUrl;
-    if (!manifest) return passthrough;
+    if (!manifest) return null;
     return {
       url: manifest,
       title: (data?.metadata?.title ?? "").trim(),
       isManifest: true,
+      audioOnly: false,
     };
   } catch {
-    return passthrough;
+    return null;
   }
 }
 
@@ -304,7 +327,7 @@ async function handleDownload(req: Request): Promise<Response> {
     if (limited) return sseError(limited);
     const url = new URL(req.url);
     const rawUrl = url.searchParams.get("url")?.trim();
-    const mode = url.searchParams.get("mode") || "audio";
+    let mode = url.searchParams.get("mode") || "audio";
 
     if (!rawUrl || !rawUrl.match(/^https?:\/\//)) {
       return Response.json({ error: "Ogiltig URL" }, { status: 400 });
@@ -353,8 +376,13 @@ async function handleDownload(req: Request): Promise<Response> {
       return Response.json({ error: "Ogiltig URL" }, { status: 400 });
     }
 
-    const tv4 = await resolveTV4Url(await resolveSRUrl(cleanUrl(rawUrl)));
-    const videoUrl = tv4.url;
+    const cleaned = cleanUrl(rawUrl);
+    const resolved: Resolved = (await resolveSRUrl(cleaned)) ??
+      (await resolveTV4Url(cleaned)) ??
+      { url: cleaned, title: "", isManifest: false, audioOnly: false };
+    const videoUrl = resolved.url;
+    // Audio-only sources (SR) always come out as mp3, even if video was picked
+    if (resolved.audioOnly) mode = "audio";
     const id = crypto.randomUUID();
     const ext = mode === "audio" ? "mp3" : "mp4";
     const outTemplate = join(DOWNLOADS_DIR, `${id}.%(ext)s`);
@@ -388,7 +416,7 @@ async function handleDownload(req: Request): Promise<Response> {
           // Step 1: get title (already known when a playback API resolved the URL)
           send("progress", { percent: 0, status: "Hämtar videoinformation..." });
 
-          let title = tv4.title;
+          let title = resolved.title;
           let duration = "";
           if (!title) {
             const infoProc = new Deno.Command(YT_DLP, {
@@ -421,7 +449,7 @@ async function handleDownload(req: Request): Promise<Response> {
             args.push(
               // HLS manifests carry split video/audio without ext=m4a audio,
               // so they need a looser selector than regular site URLs
-              "-f", tv4.isManifest
+              "-f", resolved.isManifest
                 ? "bestvideo[height<=1080]+bestaudio/best"
                 : "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
               "--merge-output-format", "mp4",
