@@ -3,7 +3,7 @@
 # setup-lxc.sh — install sugpatuben-cs on a fresh Ubuntu LTS LXC container (Proxmox).
 #
 # Usage (as root inside the container):
-#   ./setup-lxc.sh [--failover[=origin]] [domain] [port] [git-ref]
+#   ./setup-lxc.sh [--failover[=origin]|--no-failover] [domain] [port] [git-ref]
 #
 #   domain      Public domain for the site (prompted for if omitted)
 #   port        Local app port NPM will forward to (default: 3001)
@@ -12,6 +12,8 @@
 #               Pages site) may call this backend's /api/* cross-origin.
 #               Takes the page's origin (https://host, no path) as
 #               --failover=https://example.github.io, or prompts for it.
+#               On a re-run without it, the origin already in the installed
+#               service is kept; pass --no-failover to drop it.
 #
 # The app is fetched from https://github.com/inthevidual/sugpatuben
 # (the sugpatuben-cs/ directory). Override the repo with REPO=owner/name.
@@ -35,12 +37,14 @@ fi
 
 # ---- Inputs -----------------------------------------------------------------
 FAILOVER=0
+NO_FAILOVER=0
 CORS_ORIGIN=""
 POSITIONAL=()
 for arg in "$@"; do
   case "$arg" in
     --failover)     FAILOVER=1 ;;
     --failover=*)   FAILOVER=1; CORS_ORIGIN="${arg#--failover=}" ;;
+    --no-failover)  NO_FAILOVER=1 ;;
     *)              POSITIONAL+=("$arg") ;;
   esac
 done
@@ -54,6 +58,21 @@ fi
 APP_PORT="${2:-3001}"
 GIT_REF="${3:-main}"
 REPO="${REPO:-inthevidual/sugpatuben}"
+
+UNIT=/etc/systemd/system/sugpatuben-cs.service
+CORS_DROPIN=/etc/systemd/system/sugpatuben-cs.service.d/cors.conf
+
+# Re-run: keep the CORS origin the existing install already allows, so the
+# failover page doesn't silently lose this backend. A cors.conf drop-in
+# survives the unit rewrite on its own, so only the main unit needs carrying.
+if [[ $FAILOVER -eq 0 && $NO_FAILOVER -eq 0 && -f "$UNIT" ]]; then
+  CORS_ORIGIN=$(sed -n 's/^Environment=ALLOWED_ORIGIN=//p' "$UNIT" | tail -1)
+  [[ -n "$CORS_ORIGIN" ]] && echo "Keeping existing CORS origin from $UNIT (--no-failover to drop it)"
+fi
+if [[ $NO_FAILOVER -eq 1 && -f "$CORS_DROPIN" ]]; then
+  rm -f "$CORS_DROPIN"
+  echo "Removed $CORS_DROPIN"
+fi
 
 if [[ $FAILOVER -eq 1 && -z "$CORS_ORIGIN" ]]; then
   read -rp "Failover page origin to allow cross-origin requests from (e.g. https://inthevidual.github.io): " CORS_ORIGIN
@@ -134,7 +153,7 @@ echo "==> Pre-caching Deno dependencies as $APP_USER"
 runuser -u "$APP_USER" -- env DENO_DIR="$APP_HOME/deno-cache" /usr/local/bin/deno cache "$APP_DIR/server.ts"
 
 echo "==> Installing systemd service"
-cat > /etc/systemd/system/sugpatuben-cs.service <<EOF
+cat > "$UNIT" <<EOF
 [Unit]
 Description=Sug på tuben CS - YouTube downloader (client-side conversion)
 After=network.target
